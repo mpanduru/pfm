@@ -24,6 +24,10 @@ func ParseRON(input string) (int64, error) {
 		baniPart = parts[1]
 	}
 
+	if leiPart == "" {
+		return 0, fmt.Errorf("invalid amount: %q", input)
+	}
+
 	if len(baniPart) == 1 {
 		baniPart += "0"
 	}
@@ -35,7 +39,6 @@ func ParseRON(input string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid amount: %q", input)
 	}
-
 	bani, err := strconv.ParseInt(baniPart, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid amount: %q", input)
