@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"example.com/pfm/internal/db"
@@ -265,9 +266,9 @@ func (a *App) cmdList(args []string) error {
 func (a *App) cmdImport(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 
-	file := fs.String("file", "", "CSV file path [required]")
+	file := fs.String("file", "", "CSV/OFX/QFX file path [required]")
 	account := fs.String("account", "default", "Account name")
-	source := fs.String("source", "csv", "Source label (default: csv)")
+	source := fs.String("source", "", "Source label (default: csv/ofx based on extension)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -286,7 +287,25 @@ func (a *App) cmdImport(args []string) error {
 		return err
 	}
 
-	result, err := ImportCSV(conn, *file, *account, *source)
+	ext := strings.ToLower(filepath.Ext(*file))
+	src := *source
+	if src == "" {
+		if ext == ".csv" {
+			src = "csv"
+		} else {
+			src = "ofx"
+		}
+	}
+
+	var result ImportResult
+	switch ext {
+	case ".csv":
+		result, err = ImportCSV(conn, *file, *account, src)
+	case ".ofx", ".qfx":
+		result, err = ImportOFX(conn, *file, *account, src)
+	default:
+		return fmt.Errorf("unsupported file type: %s (use .csv, .ofx, .qfx)", ext)
+	}
 	if err != nil {
 		return err
 	}
