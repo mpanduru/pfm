@@ -1,0 +1,3 @@
+date,payee,amount,category,memo,external_id
+2026-01-02,Lidl,-23.45,groceries,weekly,abc123
+2026-01-03,Salary,5000,income,,pay-2026-01

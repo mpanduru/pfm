@@ -49,10 +49,8 @@ func (a *App) Run(args []string) error {
 
 	case "init":
 		return a.cmdInit(args[1:])
-
-	// Placeholders for upcoming stages:
 	case "import":
-		return errors.New("import: not implemented yet")
+		return a.cmdImport(args[1:])
 	case "add":
 		return a.cmdAdd(args[1:])
 	case "list":
@@ -110,6 +108,7 @@ Examples:
   %s version
   %s add --date 2025-10-22 --payee "Lidl" --amount -23.45 --category groceries --memo "weekly"
   %s list --month 2026-01
+  %s import --file sample.csv --account default
 `, exe, exe, filepath.Clean(a.DBPath), exe, exe)
 }
 
@@ -151,7 +150,7 @@ func (a *App) cmdAdd(args []string) error {
 		return err
 	}
 
-	id, err := db.InsertTransaction(conn, db.AddTxParams{
+	id, inserted, err := db.InsertTransaction(conn, db.AddTxParams{
 		PostedAt:   postedAt,
 		Payee:      *payee,
 		Memo:       *memo,
@@ -163,6 +162,10 @@ func (a *App) cmdAdd(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if !inserted {
+		fmt.Println("Transaction was ignored (duplicate).")
+		return nil
 	}
 
 	fmt.Printf("Added transaction #%d: %s | %s | %s | %s\n",
@@ -256,5 +259,38 @@ func (a *App) cmdList(args []string) error {
 	}
 
 	fmt.Printf("\nShown: %d   Net total: %s\n", len(rows), FormatRON(total))
+	return nil
+}
+
+func (a *App) cmdImport(args []string) error {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+
+	file := fs.String("file", "", "CSV file path [required]")
+	account := fs.String("account", "default", "Account name")
+	source := fs.String("source", "csv", "Source label (default: csv)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *file == "" {
+		return errors.New("missing required flag: --file")
+	}
+
+	conn, err := db.Open(a.DBPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := db.Migrate(conn, a.SchemaPath); err != nil {
+		return err
+	}
+
+	result, err := ImportCSV(conn, *file, *account, *source)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Import complete: seen=%d inserted=%d ignored=%d\n", result.Seen, result.Inserted, result.Ignored)
 	return nil
 }

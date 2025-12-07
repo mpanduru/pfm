@@ -17,27 +17,53 @@ type AddTxParams struct {
 	ExternalID  *string
 }
 
-func InsertTransaction(conn *sql.DB, p AddTxParams) (int64, error) {
-	res, err := conn.Exec(`
-		INSERT INTO transactions
-		(posted_at, payee, memo, amount_bani, category, account, source, external_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		p.PostedAt.Format("2006-01-02"),
-		p.Payee,
-		p.Memo,
-		p.AmountBani,
-		p.Category,
-		p.Account,
-		p.Source,
-		p.ExternalID,
+func InsertTransaction(conn *sql.DB, p AddTxParams) (int64, bool, error) {
+	var (
+		res sql.Result
+		err error
 	)
-	if err != nil {
-		return 0, fmt.Errorf("insert transaction: %w", err)
+
+	if p.ExternalID != nil {
+		res, err = conn.Exec(`
+			INSERT OR IGNORE INTO transactions
+			(posted_at, payee, memo, amount_bani, category, account, source, external_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			p.PostedAt.Format("2006-01-02"),
+			p.Payee,
+			p.Memo,
+			p.AmountBani,
+			p.Category,
+			p.Account,
+			p.Source,
+			p.ExternalID,
+		)
+	} else {
+		res, err = conn.Exec(`
+			INSERT INTO transactions
+			(posted_at, payee, memo, amount_bani, category, account, source, external_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			p.PostedAt.Format("2006-01-02"),
+			p.Payee,
+			p.Memo,
+			p.AmountBani,
+			p.Category,
+			p.Account,
+			p.Source,
+			p.ExternalID,
+		)
 	}
+
+	if err != nil {
+		return 0, false, fmt.Errorf("insert transaction: %w", err)
+	}
+
 	id, err := res.LastInsertId()
 	if err != nil {
-		return 0, fmt.Errorf("last insert id: %w", err)
+		return 0, false, fmt.Errorf("last insert id: %w", err)
 	}
-	return id, nil
+
+	inserted := id != 0
+	return id, inserted, nil
 }
