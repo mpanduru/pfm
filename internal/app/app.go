@@ -57,7 +57,7 @@ func (a *App) Run(args []string) error {
 	case "list":
 		return a.cmdList(args[1:])
 	case "report":
-		return errors.New("report: not implemented yet")
+		return a.cmdReport(args[1:])
 	case "budget":
 		return errors.New("budget: not implemented yet")
 	case "search":
@@ -311,5 +311,121 @@ func (a *App) cmdImport(args []string) error {
 	}
 
 	fmt.Printf("Import complete: seen=%d inserted=%d ignored=%d\n", result.Seen, result.Inserted, result.Ignored)
+	return nil
+}
+
+func (a *App) cmdReport(args []string) error {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		fmt.Println(`Usage:
+  pfm report <subcommand> [options]
+
+Subcommands:
+  month        Monthly summary
+  categories   Category breakdown (expenses)
+
+Examples:
+  pfm report month --month 2026-01
+  pfm report categories --month 2026-01
+`)
+		return nil
+	}
+
+	switch args[0] {
+	case "month":
+		return a.cmdReportMonth(args[1:])
+	case "categories":
+		return a.cmdReportCategories(args[1:])
+	default:
+		return fmt.Errorf("unknown report subcommand: %q (try: pfm report help)", args[0])
+	}
+}
+
+func (a *App) cmdReportMonth(args []string) error {
+	fs := flag.NewFlagSet("report month", flag.ContinueOnError)
+	month := fs.String("month", "", "Month (YYYY-MM) [required]")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *month == "" {
+		return errors.New("missing required flag: --month (YYYY-MM)")
+	}
+
+	conn, err := db.Open(a.DBPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := db.Migrate(conn, a.SchemaPath); err != nil {
+		return err
+	}
+
+	s, err := db.GetMonthSummary(conn, *month)
+	if err != nil {
+		return err
+	}
+
+	expenseAbs := -s.ExpenseBani
+
+	fmt.Printf("Month: %s\n", s.Month)
+	fmt.Printf("Transactions: %d\n", s.Count)
+	fmt.Printf("Income:   %s\n", FormatRON(s.IncomeBani))
+	fmt.Printf("Expenses: %s\n", FormatRON(expenseAbs))
+	fmt.Printf("Net:      %s\n", FormatRON(s.NetBani))
+
+	return nil
+}
+
+func (a *App) cmdReportCategories(args []string) error {
+	fs := flag.NewFlagSet("report categories", flag.ContinueOnError)
+	month := fs.String("month", "", "Month (YYYY-MM) [required]")
+	all := fs.Bool("all", false, "Include income categories too (default: expenses only)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *month == "" {
+		return errors.New("missing required flag: --month (YYYY-MM)")
+	}
+
+	conn, err := db.Open(a.DBPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := db.Migrate(conn, a.SchemaPath); err != nil {
+		return err
+	}
+
+	expensesOnly := !*all
+	rows, grand, err := db.GetCategoryTotalsForMonth(conn, *month, expensesOnly)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		fmt.Println("No matching transactions.")
+		return nil
+	}
+
+	title := "Category totals (expenses)"
+	if *all {
+		title = "Category totals (all)"
+	}
+	fmt.Printf("%s for %s\n\n", title, *month)
+	fmt.Printf("%-18s  %-8s  %s\n", "CATEGORY", "COUNT", "TOTAL")
+	fmt.Printf("%s\n", "------------------  --------  ------------")
+
+	for _, r := range rows {
+		amt := r.TotalBani
+		if expensesOnly {
+			amt = -amt
+		}
+		fmt.Printf("%-18s  %-8d  %s\n", trunc(r.Category, 18), r.Count, FormatRON(amt))
+	}
+
+	if expensesOnly {
+		grand = -grand
+	}
+	fmt.Printf("\nGrand total: %s\n", FormatRON(grand))
 	return nil
 }
