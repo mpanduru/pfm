@@ -59,7 +59,7 @@ func (a *App) Run(args []string) error {
 	case "report":
 		return a.cmdReport(args[1:])
 	case "budget":
-		return errors.New("budget: not implemented yet")
+		return a.cmdBudget(args[1:])
 	case "search":
 		return errors.New("search: not implemented yet")
 
@@ -108,8 +108,11 @@ Examples:
   %s init
   %s version
   %s add --date 2025-10-22 --payee "Lidl" --amount -23.45 --category groceries --memo "weekly"
-  %s list --month 2026-01
+  %s list --month 2025-10
   %s import --file sample.csv --account default
+  %s report categories --month 2025-11
+  %s budget set --month 2025-12 --category groceries --limit 200
+  %s budget status --month 2025-12
 `, exe, exe, filepath.Clean(a.DBPath), exe, exe)
 }
 
@@ -427,5 +430,141 @@ func (a *App) cmdReportCategories(args []string) error {
 		grand = -grand
 	}
 	fmt.Printf("\nGrand total: %s\n", FormatRON(grand))
+	return nil
+}
+
+func (a *App) cmdBudget(args []string) error {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		fmt.Println(`Usage:
+  pfm budget <subcommand> [options]
+
+Subcommands:
+  set      Set a budget for a month+category
+  status   Show budgets vs spending for a month
+
+Examples:
+  pfm budget set --month 2026-01 --category groceries --limit 800
+  pfm budget status --month 2026-01
+`)
+		return nil
+	}
+
+	switch args[0] {
+	case "set":
+		return a.cmdBudgetSet(args[1:])
+	case "status":
+		return a.cmdBudgetStatus(args[1:])
+	default:
+		return fmt.Errorf("unknown budget subcommand: %q (try: pfm budget help)", args[0])
+	}
+}
+
+func (a *App) cmdBudgetSet(args []string) error {
+	fs := flag.NewFlagSet("budget set", flag.ContinueOnError)
+
+	month := fs.String("month", "", "Month (YYYY-MM) [required]")
+	category := fs.String("category", "", "Category [required]")
+	limitStr := fs.String("limit", "", "Limit in RON (e.g. 800 or 800.50) [required]")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *month == "" || *category == "" || *limitStr == "" {
+		return errors.New("missing required flags: --month, --category, --limit")
+	}
+
+	limitBani, err := ParseRON(*limitStr)
+	if err != nil {
+		return fmt.Errorf("invalid --limit: %w", err)
+	}
+	if limitBani < 0 {
+		return errors.New("--limit must be positive")
+	}
+
+	conn, err := db.Open(a.DBPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := db.Migrate(conn, a.SchemaPath); err != nil {
+		return err
+	}
+
+	if err := db.UpsertBudget(conn, *month, *category, limitBani); err != nil {
+		return err
+	}
+
+	fmt.Printf("Budget set: %s %s = %s\n", *month, *category, FormatRON(limitBani))
+	return nil
+}
+
+func (a *App) cmdBudgetStatus(args []string) error {
+	fs := flag.NewFlagSet("budget status", flag.ContinueOnError)
+
+	month := fs.String("month", "", "Month (YYYY-MM) [required]")
+	warnPct := fs.Int("warn", 80, "Warn threshold percent (default 80)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *month == "" {
+		return errors.New("missing required flag: --month (YYYY-MM)")
+	}
+	if *warnPct <= 0 || *warnPct > 1000 {
+		return errors.New("--warn must be a reasonable percent (1..1000)")
+	}
+
+	conn, err := db.Open(a.DBPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := db.Migrate(conn, a.SchemaPath); err != nil {
+		return err
+	}
+
+	budgets, err := db.ListBudgetsForMonth(conn, *month)
+	if err != nil {
+		return err
+	}
+	if len(budgets) == 0 {
+		fmt.Println("No budgets set for that month.")
+		return nil
+	}
+
+	fmt.Printf("Budget status for %s\n\n", *month)
+	fmt.Printf("%-18s  %-12s  %-12s  %-8s  %s\n", "CATEGORY", "LIMIT", "SPENT", "USED", "STATUS")
+	fmt.Printf("%s\n", "------------------  ------------  ------------  --------  ------")
+
+	for _, b := range budgets {
+		spentNeg, err := db.GetSpentForMonthCategory(conn, b.Month, b.Category)
+		if err != nil {
+			return err
+		}
+		spentAbs := -spentNeg
+
+		usedPct := 0
+		if b.LimitBani > 0 {
+			usedPct = int((spentAbs * 100) / b.LimitBani)
+		}
+
+		status := "OK"
+		if spentAbs > b.LimitBani {
+			status = "OVER"
+		} else if usedPct >= *warnPct {
+			status = "WARN"
+		}
+
+		fmt.Printf("%-18s  %-12s  %-12s  %-7d%%  %s\n",
+			trunc(b.Category, 18),
+			FormatRON(b.LimitBani),
+			FormatRON(spentAbs),
+			usedPct,
+			status,
+		)
+	}
+
 	return nil
 }

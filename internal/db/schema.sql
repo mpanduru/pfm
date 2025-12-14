@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS budgets (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   month           TEXT NOT NULL,
   category        TEXT NOT NULL,
-  limit_cents     INTEGER NOT NULL,
+  limit_bani      INTEGER NOT NULL,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(month, category)
 );
