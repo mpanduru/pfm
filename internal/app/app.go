@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -60,6 +61,10 @@ func (a *App) Run(args []string) error {
 		return a.cmdReport(args[1:])
 	case "budget":
 		return a.cmdBudget(args[1:])
+	case "rule":
+		return a.cmdRule(args[1:])
+	case "categorize":
+		return a.cmdCategorize(args[1:])
 	case "search":
 		return errors.New("search: not implemented yet")
 
@@ -564,6 +569,186 @@ func (a *App) cmdBudgetStatus(args []string) error {
 			usedPct,
 			status,
 		)
+	}
+
+	return nil
+}
+
+func (a *App) cmdRule(args []string) error {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		fmt.Println(`Usage:
+  pfm rule <subcommand> [options]
+
+Subcommands:
+  add    Add a categorization rule (regex)
+  list   List rules
+
+Examples:
+  pfm rule add --name groceries --pattern "(?i)lidl|kaufland" --category groceries --priority 10
+  pfm rule list
+`)
+		return nil
+	}
+
+	switch args[0] {
+	case "add":
+		return a.cmdRuleAdd(args[1:])
+	case "list":
+		return a.cmdRuleList(args[1:])
+	default:
+		return fmt.Errorf("unknown rule subcommand: %q (try: pfm rule help)", args[0])
+	}
+}
+
+func (a *App) cmdRuleAdd(args []string) error {
+	fs := flag.NewFlagSet("rule add", flag.ContinueOnError)
+
+	name := fs.String("name", "", "Rule name [required]")
+	pattern := fs.String("pattern", "", "Regex pattern [required]")
+	category := fs.String("category", "", "Category to apply [required]")
+	priority := fs.Int64("priority", 100, "Lower runs first")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" || *pattern == "" || *category == "" {
+		return errors.New("missing required flags: --name, --pattern, --category")
+	}
+
+	if _, err := regexp.Compile(*pattern); err != nil {
+		return fmt.Errorf("invalid regex: %w", err)
+	}
+
+	conn, err := db.Open(a.DBPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := db.Migrate(conn, a.SchemaPath); err != nil {
+		return err
+	}
+
+	id, err := db.AddRule(conn, *name, *pattern, *category, *priority)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Added rule #%d: %s -> %s (priority %d)\n", id, *name, *category, *priority)
+	return nil
+}
+
+func (a *App) cmdRuleList(args []string) error {
+	fs := flag.NewFlagSet("rule list", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	conn, err := db.Open(a.DBPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := db.Migrate(conn, a.SchemaPath); err != nil {
+		return err
+	}
+
+	rules, err := db.ListRules(conn)
+	if err != nil {
+		return err
+	}
+	if len(rules) == 0 {
+		fmt.Println("No rules.")
+		return nil
+	}
+
+	fmt.Printf("%-4s  %-10s  %-8s  %-8s  %s\n", "ID", "PRIORITY", "CATEGORY", "NAME", "PATTERN")
+	fmt.Printf("%s\n", "----  ----------  --------  --------  ------------------------------")
+	for _, r := range rules {
+		fmt.Printf("%-4d  %-10d  %-8s  %-8s  %s\n",
+			r.ID, r.Priority, trunc(r.Category, 8), trunc(r.Name, 8), r.Pattern)
+	}
+
+	return nil
+}
+
+func (a *App) cmdCategorize(args []string) error {
+	fs := flag.NewFlagSet("categorize", flag.ContinueOnError)
+
+	month := fs.String("month", "", "Only categorize transactions in month (YYYY-MM)")
+	all := fs.Bool("all", false, "Categorize all uncategorized transactions (ignores --month if empty)")
+	dry := fs.Bool("dry-run", false, "Show changes without writing to DB")
+	limit := fs.Int("limit", 500, "Max transactions to process")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	conn, err := db.Open(a.DBPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := db.Migrate(conn, a.SchemaPath); err != nil {
+		return err
+	}
+
+	ruleRows, err := db.ListRules(conn)
+	if err != nil {
+		return err
+	}
+	if len(ruleRows) == 0 {
+		fmt.Println("No rules. Add some with: pfm rule add ...")
+		return nil
+	}
+
+	rules, err := compileRules(ruleRows)
+	if err != nil {
+		return err
+	}
+
+	filterMonth := *month
+	if *all && filterMonth == "" {
+		filterMonth = ""
+	}
+
+	txs, err := db.ListTxForCategorize(conn, filterMonth, *all)
+	if err != nil {
+		return err
+	}
+	if len(txs) == 0 {
+		fmt.Println("No uncategorized transactions found.")
+		return nil
+	}
+
+	if *limit > 0 && len(txs) > *limit {
+		txs = txs[:*limit]
+	}
+
+	changed := 0
+	for _, t := range txs {
+		newCat, rule := matchCategory(rules, t.Payee, t.Memo)
+		if newCat == "" {
+			continue
+		}
+
+		changed++
+		if *dry {
+			fmt.Printf("[DRY] #%d %s %q -> %s (rule: %s)\n", t.ID, t.PostedAt, t.Payee, newCat, rule.Name)
+			continue
+		}
+
+		if err := db.UpdateTxCategory(conn, t.ID, newCat); err != nil {
+			return err
+		}
+		fmt.Printf("Updated #%d -> %s (rule: %s)\n", t.ID, newCat, rule.Name)
+	}
+
+	if changed == 0 {
+		fmt.Println("No matches.")
+	} else if *dry {
+		fmt.Printf("Would update %d transaction(s).\n", changed)
+	} else {
+		fmt.Printf("Updated %d transaction(s).\n", changed)
 	}
 
 	return nil
