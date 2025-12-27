@@ -66,7 +66,7 @@ func (a *App) Run(args []string) error {
 	case "categorize":
 		return a.cmdCategorize(args[1:])
 	case "search":
-		return errors.New("search: not implemented yet")
+		return a.cmdSearch(args[1:])
 
 	default:
 		return fmt.Errorf("unknown command: %q (try: pfm help)", args[0])
@@ -751,5 +751,112 @@ func (a *App) cmdCategorize(args []string) error {
 		fmt.Printf("Updated %d transaction(s).\n", changed)
 	}
 
+	return nil
+}
+
+func (a *App) cmdSearch(args []string) error {
+	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+
+	month := fs.String("month", "", "Filter by month (YYYY-MM)")
+	fromStr := fs.String("from", "", "Start date (YYYY-MM-DD)")
+	toStr := fs.String("to", "", "End date (YYYY-MM-DD)")
+	category := fs.String("category", "", "Filter by category")
+	text := fs.String("text", "", "Search text in payee/memo (case-insensitive)")
+	account := fs.String("account", "", "Filter by account")
+	minStr := fs.String("min", "", "Min amount in RON (inclusive, e.g. -200 or 0)")
+	maxStr := fs.String("max", "", "Max amount in RON (inclusive, e.g. -10 or 5000)")
+	limit := fs.Int("limit", 200, "Max rows to show")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var from *time.Time
+	var to *time.Time
+
+	if *fromStr != "" {
+		t, err := time.Parse("2006-01-02", *fromStr)
+		if err != nil {
+			return fmt.Errorf("invalid --from (expected YYYY-MM-DD): %w", err)
+		}
+		from = &t
+	}
+	if *toStr != "" {
+		t, err := time.Parse("2006-01-02", *toStr)
+		if err != nil {
+			return fmt.Errorf("invalid --to (expected YYYY-MM-DD): %w", err)
+		}
+		to = &t
+	}
+
+	var minBani *int64
+	var maxBani *int64
+
+	if *minStr != "" {
+		v, err := ParseRON(*minStr)
+		if err != nil {
+			return fmt.Errorf("invalid --min: %w", err)
+		}
+		minBani = &v
+	}
+	if *maxStr != "" {
+		v, err := ParseRON(*maxStr)
+		if err != nil {
+			return fmt.Errorf("invalid --max: %w", err)
+		}
+		maxBani = &v
+	}
+
+	conn, err := db.Open(a.DBPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := db.Migrate(conn, a.SchemaPath); err != nil {
+		return err
+	}
+
+	rows, err := db.SearchTransactions(conn, db.SearchFilter{
+		Month:    *month,
+		From:     from,
+		To:       to,
+		Category: *category,
+		Text:     *text,
+		Account:  *account,
+		MinBani:  minBani,
+		MaxBani:  maxBani,
+		Limit:    *limit,
+	})
+	if err != nil {
+		return err
+	}
+
+	if len(rows) == 0 {
+		fmt.Println("No transactions found.")
+		return nil
+	}
+
+	fmt.Printf("%-5s  %-10s  %-10s  %-18s  %-12s  %s\n", "ID", "DATE", "ACCOUNT", "PAYEE", "AMOUNT", "CATEGORY")
+	fmt.Printf("%s\n", "-----  ----------  ----------  ------------------  ------------  --------")
+
+	var total int64
+	for _, r := range rows {
+		total += r.AmountBani
+		payee := r.Payee
+		if len(payee) > 18 {
+			payee = payee[:18]
+		}
+		fmt.Printf("%-5d  %-10s  %-10s  %-18s  %-12s  %s\n",
+			r.ID,
+			r.PostedAt.Format("2006-01-02"),
+			trunc(r.Account, 10),
+			trunc(payee, 18),
+			FormatRON(r.AmountBani),
+			r.Category,
+		)
+	}
+
+	fmt.Printf("\nShown: %d   Net total: %s\n", len(rows), FormatRON(total))
 	return nil
 }
