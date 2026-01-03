@@ -111,18 +111,18 @@ Commands:
   tui			  Start UI
 
 Data:
-  Database file defaults to: %s
+  Database file defaults to: pfm
 
 Examples:
-  %s init
-  %s version
-  %s add --date 2025-10-22 --payee "Lidl" --amount -23.45 --category groceries --memo "weekly"
-  %s list --month 2025-10
-  %s import --file sample.csv --account default
-  %s report categories --month 2025-11
-  %s budget set --month 2025-12 --category groceries --limit 200
-  %s budget status --month 2025-12
-  %s search --min -200 --max -10
+  pfm init
+  pfm version
+  pfm add --date 2025-10-22 --payee "Lidl" --amount -23.45 --category groceries --memo "weekly"
+  pfm list --month 2025-10
+  pfm import --file sample.csv --account default
+  pfm report categories --month 2025-11
+  pfm budget set --month 2025-12 --category groceries --limit 200
+  pfm budget status --month 2025-12
+  pfm search --min -200 --max -10
 `, exe, exe, filepath.Clean(a.DBPath), exe, exe)
 }
 

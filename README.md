@@ -30,6 +30,6 @@ cd pfm
 
 ## Build and run the application
 ```bash
-go build -o pfm ./cmd
+go build -o pfm ./cmd/pfm
 ./pfm help
 ```
