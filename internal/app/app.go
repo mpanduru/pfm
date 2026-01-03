@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"example.com/pfm/internal/db"
 )
 
@@ -67,6 +68,8 @@ func (a *App) Run(args []string) error {
 		return a.cmdCategorize(args[1:])
 	case "search":
 		return a.cmdSearch(args[1:])
+	case "tui":
+    	return a.cmdTUI(args[1:])
 
 	default:
 		return fmt.Errorf("unknown command: %q (try: pfm help)", args[0])
@@ -105,6 +108,7 @@ Commands:
   report          Generate reports (later)
   budget          Set/check budgets (later)
   search          Search/filter transactions (later)
+  tui			  Start UI
 
 Data:
   Database file defaults to: %s
@@ -118,6 +122,7 @@ Examples:
   %s report categories --month 2025-11
   %s budget set --month 2025-12 --category groceries --limit 200
   %s budget status --month 2025-12
+  %s search --min -200 --max -10
 `, exe, exe, filepath.Clean(a.DBPath), exe, exe)
 }
 
@@ -859,4 +864,41 @@ func (a *App) cmdSearch(args []string) error {
 
 	fmt.Printf("\nShown: %d   Net total: %s\n", len(rows), FormatRON(total))
 	return nil
+}
+
+func (a *App) cmdTUI(args []string) error {
+	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
+
+	month := fs.String("month", "", "Filter by month (YYYY-MM)")
+	limit := fs.Int("limit", 200, "Max rows to load")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	conn, err := db.Open(a.DBPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := db.Migrate(conn, a.SchemaPath); err != nil {
+		return err
+	}
+
+	rows, err := db.SearchTransactions(conn, db.SearchFilter{
+		Month: *month,
+		Limit: *limit,
+	})
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		fmt.Println("No transactions found.")
+		return nil
+	}
+
+	p := tea.NewProgram(newTUIModel(rows))
+	_, err = p.Run()
+	return err
 }
